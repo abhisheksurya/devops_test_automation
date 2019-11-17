@@ -1,0 +1,172 @@
+version: '3'
+services:
+  nginx:
+    image: nginx
+    volumes:
+     - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+     - ./nginx/conf.d:/etc/nginx/conf.d
+     - ./nginx/html:/usr/share/nginx/html
+     - ./selenoid/video:/usr/share/nginx/video
+    ports:
+     - "80:80"
+    depends_on:
+     - "zafira"
+     - "jenkins-master"
+     - "selenium-hub"
+     - "elasticsearch"
+    restart: always
+  db:
+    image: qaprosoft/postgres:9.6
+    volumes:
+     - ./pgdata:/var/lib/postgresql/data
+     - ./database:/docker-entrypoint-initdb.d
+    ports:
+     - "5432:5432"
+    env_file:
+     - variables.env
+    restart: always
+  screenshoter:
+    image: selenium/standalone-chrome:3.11.0-californium
+    volumes:
+    - /dev/shm:/dev/shm
+    restart: always
+  zafira:
+    image: qaprosoft/zafira:3.2.30
+    env_file:
+     - variables.env
+    #Uncomment only for debugging Zafira
+#    environment:
+#     - "JAVA_OPTS=-Xdebug -Xnoagent -Djava.compiler=NONE -Xrunjdwp:transport=dt_socket,address=8000,server=y,suspend=n"
+#    ports:
+#     - "8002:8000"
+    depends_on:
+     - "db"
+     - "screenshoter"
+     - "rabbitmq"
+     - "redis"
+    restart: always
+  jenkins-master:
+    image: qaprosoft/jenkins-master:2.8
+    env_file:
+     - variables.env
+    volumes:
+     - ./jenkins:/var/jenkins_home
+     - $HOME/.ssh:/var/jenkins_home/.ssh
+     - $HOME/.m2:/var/jenkins_home/.m2
+    ports:
+     - "50000:50000"
+    restart: always
+  jenkins-slave-api:
+    image: qaprosoft/jenkins-slave
+    env_file:
+     - variables.env
+    environment:
+     - JENKINS_SLAVE_NAME=jenkins-slave-api
+     - JENKINS_SLAVE_WORKERS=5
+     - JENKINS_SLAVE_LABELS=qps-slave api
+    volumes:
+     - $HOME/.ssh:/root/.ssh
+     - $HOME/.m2:/root/.m2
+    ports:
+     - "8000:8000"
+    depends_on:
+     - "jenkins-master"
+    restart: always
+  jenkins-slave-web:
+    image: qaprosoft/jenkins-slave
+    env_file:
+     - variables.env
+    environment:
+     - JENKINS_SLAVE_NAME=jenkins-slave-web
+     - JENKINS_SLAVE_WORKERS=3
+     - JENKINS_SLAVE_LABELS=qps-slave web
+    volumes:
+     - $HOME/.ssh:/root/.ssh
+     - $HOME/.m2:/root/.m2
+    ports:
+     - "8001:8000"
+    depends_on:
+     - "jenkins-master"
+    restart: always
+  sonarqube:
+    image: qaprosoft/sonarqube
+    env_file:
+     - variables.env
+    command: -Dsonar.web.context=/sonarqube
+    depends_on:
+     - "db"
+    restart: always
+  redis:
+    image: redis:4.0.11
+    ports:
+    - 6379:6379
+    restart: always
+  rabbitmq:
+    image: qaprosoft/rabbitmq
+    env_file:
+     - variables.env
+    volumes:
+     - ./config/definitions.json:/etc/rabbitmq/definitions.json:ro
+    ports:
+     - 15672:15672
+     - 15674:15674
+     - 5672:5672
+    restart: always
+  ftp:
+    image: qaprosoft/pure-ftpd:latest
+    ports:
+     - "21:21"
+     - "30000-30009:30000-30009"
+    restart: always
+  selenium-hub:
+    image: qaprosoft/selenium-hub:3.1
+    env_file:
+     - variables.env
+    environment:
+     - JAVA_OPTS=-Dselenium.LOGGER.level=FINEST
+    restart: always
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:6.3.1
+    volumes:
+     - ./esdata:/usr/share/elasticsearch/data
+     - ./config/elasticsearch.yml:/etc/elasticsearch/elasticsearch.yml
+    environment:
+     - bootstrap.memory_lock=true
+     - ES_JAVA_OPTS=-Xms2g -Xmx2g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+     - 9200:9200
+    restart: always
+  logstash:
+    image: docker.elastic.co/logstash/logstash:6.3.2
+    volumes:
+     - ./config/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+     - ./config/mapping.json:/mapping.json:ro
+    restart: always
+    depends_on:
+     - elasticsearch
+  ggr:
+    image: aerokube/ggr:latest-release
+    volumes:
+      - ./grid-router/:/etc/grid-router:ro
+    ports:
+     - "4444:4444"
+    restart: always
+  selenoid:
+    network_mode: bridge
+    image: aerokube/selenoid:latest-release
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - $PWD/selenoid/:/etc/selenoid/
+      - $PWD/selenoid/video/:/opt/selenoid/video/
+    environment:
+      - OVERRIDE_VIDEO_OUTPUT_DIR=$PWD/selenoid/video/
+    command: ["-conf", "/etc/selenoid/browsers.json", "-video-output-dir", "/opt/selenoid/video", "-listen", ":4445", "-timeout", "3m0s"]
+    ports:
+      - "4445:4445"
+    restart: always
+#TODO:
+#also describe workaround to increase vm.max_map_count=262144 appending it to /etc/sysctl.conf
